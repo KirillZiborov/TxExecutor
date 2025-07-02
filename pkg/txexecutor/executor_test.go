@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TBD: Integrate PBT for determinism guarantees
+
 func TestExample1(t *testing.T) {
 	ResetState([]AccountValue{{"A", 20}, {"B", 30}, {"C", 40}})
 	block := Block{Transactions: []Transaction{

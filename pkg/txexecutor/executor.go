@@ -102,6 +102,7 @@ type txResult struct {
 }
 
 // ExecuteBlock implementation.
+// TBD: Add MVCC-based concurrency control with timestamps for higher parallelism
 func ExecuteBlock(b Block) ([]AccountValue, error) {
 	logging.Sugar.Infof("ExecuteBlock: %d tx, workers=%d", len(b.Transactions), Workers)
 
@@ -113,6 +114,7 @@ func ExecuteBlock(b Block) ([]AccountValue, error) {
 	for i := 0; i < Workers; i++ {
 		go func() {
 			for idx := range execCh {
+				// TBD: Add panic-safety wrapper here to recover from panics in Updates
 				ctx := newTxCtx()
 				upd, err := b.Transactions[idx].Updates(ctx)
 				resCh <- txResult{
@@ -145,12 +147,14 @@ func ExecuteBlock(b Block) ([]AccountValue, error) {
 		}
 
 		// try to commit
+		// TBD: Add panic-safety wrapper here to recover from panics while committing
 		if commitTx(r) {
 			delete(ready, k)
 			k++
 		} else {
 			// retry
 			delete(ready, k)
+			// TBD: Implement bounded retry logic to avoid infinite loops on conflicts
 			execCh <- k
 		}
 	}
@@ -210,6 +214,7 @@ func commitTx(r txResult) bool {
 		for _, a := range locked {
 			a.mu.Unlock()
 		}
+		// TBD: Return detailed diagnostics for failed transactions
 		logging.Sugar.Infof("transaction #%d skip: error=%v", r.idx, r.err)
 		return true
 	}
