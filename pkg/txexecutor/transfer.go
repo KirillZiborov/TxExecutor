@@ -2,21 +2,21 @@ package txexecutor
 
 import "fmt"
 
-// Transfer transfers some value from from account to to account.
+// Transfer transfers some value from From account to To account.
 type Transfer struct {
-	from  string
-	to    string
-	value uint
+	From  string
+	To    string
+	Value uint
 }
 
 // Updates implements Transaction interface.
 func (t Transfer) Updates(state AccountState) ([]AccountUpdate, error) {
-	fromAcc := state.GetAccount(t.from)
-	if fromAcc.Balance < t.value {
-		return nil, fmt.Errorf("insufficient balance on %s", t.from)
+	fromAcc := state.GetAccount(t.From)
+	if fromAcc.Balance < t.Value {
+		return nil, fmt.Errorf("insufficient balance on %s", t.From)
 	}
 	return []AccountUpdate{
-		{Name: t.from, BalanceChange: -int(t.value)},
-		{Name: t.to, BalanceChange: int(t.value)},
+		{Name: t.From, BalanceChange: -int(t.Value)},
+		{Name: t.To, BalanceChange: int(t.Value)},
 	}, nil
 }

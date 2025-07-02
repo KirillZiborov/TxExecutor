@@ -4,19 +4,11 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"sync"
 	"testing"
 )
 
-func resetState(initial []AccountValue) {
-	state = sync.Map{}
-	for _, v := range initial {
-		state.Store(v.Name, &acct{bal: v.Balance, ver: 0})
-	}
-}
-
 func TestExample1(t *testing.T) {
-	resetState([]AccountValue{{"A", 20}, {"B", 30}, {"C", 40}})
+	ResetState([]AccountValue{{"A", 20}, {"B", 30}, {"C", 40}})
 	block := Block{Transactions: []Transaction{
 		Transfer{"A", "B", 5},
 		Transfer{"B", "C", 10},
@@ -30,7 +22,7 @@ func TestExample1(t *testing.T) {
 }
 
 func TestExample2(t *testing.T) {
-	resetState([]AccountValue{{"A", 10}, {"B", 20}, {"C", 30}, {"D", 40}})
+	ResetState([]AccountValue{{"A", 10}, {"B", 20}, {"C", 30}, {"D", 40}})
 	block := Block{Transactions: []Transaction{
 		Transfer{"A", "B", 5},
 		Transfer{"C", "D", 10},
@@ -43,7 +35,7 @@ func TestExample2(t *testing.T) {
 }
 
 func TestDepositAndWithdraw(t *testing.T) {
-	resetState([]AccountValue{{Name: "X", Balance: 10}})
+	ResetState([]AccountValue{{Name: "X", Balance: 10}})
 	block := Block{Transactions: []Transaction{
 		Deposit{To: "Y", Amount: 5},    // Y = 5
 		Withdraw{From: "X", Amount: 7}, // X: 10-7 = 3
@@ -64,7 +56,7 @@ func TestDepositAndWithdraw(t *testing.T) {
 }
 
 func TestBatchTransfer(t *testing.T) {
-	resetState([]AccountValue{
+	ResetState([]AccountValue{
 		{Name: "A", Balance: 100},
 		{Name: "B", Balance: 0},
 		{Name: "C", Balance: 0},
@@ -86,7 +78,7 @@ func TestBatchTransfer(t *testing.T) {
 }
 
 func TestBatchTransfer2(t *testing.T) {
-	resetState([]AccountValue{
+	ResetState([]AccountValue{
 		{Name: "A", Balance: 100},
 		{Name: "B", Balance: 0},
 		{Name: "C", Balance: 0},
@@ -108,7 +100,7 @@ func TestBatchTransfer2(t *testing.T) {
 }
 
 func TestInterestAccrual(t *testing.T) {
-	resetState([]AccountValue{
+	ResetState([]AccountValue{
 		{Name: "A", Balance: 100},
 		{Name: "B", Balance: 200},
 		{Name: "C", Balance: 33},
@@ -129,7 +121,7 @@ func TestInterestAccrual(t *testing.T) {
 }
 
 func TestHighContentionTransfers(t *testing.T) {
-	resetState([]AccountValue{
+	ResetState([]AccountValue{
 		{Name: "A", Balance: 1000},
 		{Name: "B", Balance: 0},
 	})
@@ -137,8 +129,8 @@ func TestHighContentionTransfers(t *testing.T) {
 	var txs []Transaction
 	for i := 0; i < 50; i++ {
 		txs = append(txs,
-			Transfer{from: "A", to: "B", value: 1},
-			Transfer{from: "B", to: "A", value: 1},
+			Transfer{From: "A", To: "B", Value: 1},
+			Transfer{From: "B", To: "A", Value: 1},
 		)
 	}
 	block := Block{Transactions: txs}
@@ -154,11 +146,11 @@ func TestHighContentionTransfers(t *testing.T) {
 }
 
 func TestEdgeCases(t *testing.T) {
-	resetState(nil)
+	ResetState(nil)
 	block := Block{Transactions: []Transaction{
 		Withdraw{From: "X", Amount: 1},         // fails
 		Deposit{To: "Y", Amount: 0},            // fails
-		Transfer{from: "X", to: "Y", value: 1}, // fails
+		Transfer{From: "X", To: "Y", Value: 1}, // fails
 	}}
 	got, _ := ExecuteBlock(block)
 	want := []AccountValue{
@@ -177,7 +169,7 @@ func (s *seqCtx) GetAccount(name string) AccountValue {
 }
 
 func TestConcurrentVsSequentialDeterminism(t *testing.T) {
-	resetState([]AccountValue{
+	ResetState([]AccountValue{
 		{"A0", 1000},
 		{"A1", 1000},
 		{"A2", 1000},
@@ -192,7 +184,7 @@ func TestConcurrentVsSequentialDeterminism(t *testing.T) {
 		from := fmt.Sprintf("A%d", i%5)
 		to := fmt.Sprintf("A%d", (i+1)%5)
 		val := uint((i + 1) * 10)
-		txs = append(txs, Transfer{from: from, to: to, value: val})
+		txs = append(txs, Transfer{From: from, To: to, Value: val})
 	}
 	// 5 BatchTransfers from A0 to A1, A2, A3
 	for i := 0; i < 5; i++ {

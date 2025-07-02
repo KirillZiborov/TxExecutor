@@ -4,9 +4,10 @@
 package txexecutor
 
 import (
-	"log"
 	"sort"
 	"sync"
+
+	"github.com/KirillZiborov/TxExecutor/internal/logging"
 )
 
 // Updates
@@ -54,6 +55,13 @@ var (
 	state sync.Map // map from name to *acct
 )
 
+func ResetState(initial []AccountValue) {
+	state = sync.Map{}
+	for _, v := range initial {
+		state.Store(v.Name, &acct{bal: v.Balance, ver: 0})
+	}
+}
+
 // ensureAcct returns the *acct for name or creates it.
 func ensureAcct(name string) *acct {
 	if v, ok := state.Load(name); ok {
@@ -95,7 +103,7 @@ type txResult struct {
 
 // ExecuteBlock implementation.
 func ExecuteBlock(b Block) ([]AccountValue, error) {
-	log.Printf("[INFO] ExecuteBlock: %d tx, workers=%d", len(b.Transactions), Workers)
+	logging.Sugar.Infof("ExecuteBlock: %d tx, workers=%d", len(b.Transactions), Workers)
 
 	// channels
 	execCh := make(chan int, len(b.Transactions))
@@ -148,7 +156,7 @@ func ExecuteBlock(b Block) ([]AccountValue, error) {
 	}
 
 	close(execCh)
-	log.Printf("[INFO] ExecuteBlock complete")
+	logging.Sugar.Info("ExecuteBlock complete")
 
 	// collect final state
 	var final []AccountValue
@@ -192,7 +200,7 @@ func commitTx(r txResult) bool {
 			for _, a := range locked {
 				a.mu.Unlock()
 			}
-			log.Printf("[RETRY] transaction #%d due to stale read", r.idx)
+			logging.Sugar.Infof("transaction #%d retry: stale read", r.idx)
 			return false
 		}
 	}
@@ -202,7 +210,7 @@ func commitTx(r txResult) bool {
 		for _, a := range locked {
 			a.mu.Unlock()
 		}
-		log.Printf("[SKIP] transaction #%d error=%v", r.idx, r.err)
+		logging.Sugar.Infof("transaction #%d skip: error=%v", r.idx, r.err)
 		return true
 	}
 
@@ -226,6 +234,6 @@ func commitTx(r txResult) bool {
 	for _, a := range locked {
 		a.mu.Unlock()
 	}
-	log.Printf("[COMMIT] transaction #%d applied", r.idx)
+	logging.Sugar.Infof("transaction #%d committed", r.idx)
 	return true
 }

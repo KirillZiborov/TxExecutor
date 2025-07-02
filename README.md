@@ -9,3 +9,5 @@ A deterministic concurrent transaction executor for blockchain‐style account u
 - **Formatting**: gofmt, goimports
 - **Linting**: govet
 - **Testing**: `testing`
+- **Logging**: zap (go.uber.org/zap)
+- **AI Model**: Test-cases and test skeletons were generated with ChatGPT o3-pro
