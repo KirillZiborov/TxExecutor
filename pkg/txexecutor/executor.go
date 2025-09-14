@@ -44,32 +44,31 @@ type Block struct {
 // Workers process transactions.
 var Workers = 5
 
-// internal account representation with versioning and locking
+// internal account representation with versioning
 type acct struct {
-	mu  sync.Mutex
 	bal uint
 	ver uint64
 }
 
 var (
-	state sync.Map // map from name to *acct
+	state sync.Map // map from name to acct
 )
 
 func ResetState(initial []AccountValue) {
 	state = sync.Map{}
 	for _, v := range initial {
-		state.Store(v.Name, &acct{bal: v.Balance, ver: 0})
+		state.Store(v.Name, acct{bal: v.Balance, ver: 0})
 	}
 }
 
-// ensureAcct returns the *acct for name or creates it.
-func ensureAcct(name string) *acct {
+// ensureAcct returns the acct for name or creates it.
+func ensureAcct(name string) acct {
 	if v, ok := state.Load(name); ok {
-		return v.(*acct)
+		return v.(acct)
 	}
-	a := &acct{}
+	a := acct{}
 	real, _ := state.LoadOrStore(name, a)
-	return real.(*acct)
+	return real.(acct)
 }
 
 // txCtx implements AccountState.
@@ -85,8 +84,6 @@ func newTxCtx() *txCtx {
 // GetAccount implementation for txCtx.
 func (c *txCtx) GetAccount(name string) AccountValue {
 	ac := ensureAcct(name)
-	ac.mu.Lock()
-	defer ac.mu.Unlock()
 
 	if _, seen := c.reads[name]; !seen {
 		c.reads[name] = ac.ver
@@ -142,13 +139,19 @@ func ExecuteBlock(b Block) ([]AccountValue, error) {
 		if r, ok = ready[k]; !ok {
 			// wait for new result
 			r = <-resCh
-			ready[r.idx] = r
-			continue // try again
+			if verifyTx(r) {
+				ready[r.idx] = r
+				continue // try again
+			} else {
+				execCh <- r.idx
+				continue
+			}
 		}
 
 		// try to commit
 		// TBD: Add panic-safety wrapper here to recover from panics while committing
-		if commitTx(r) {
+		if verifyTx(r) {
+			commitTx(r)
 			delete(ready, k)
 			k++
 		} else {
@@ -165,7 +168,7 @@ func ExecuteBlock(b Block) ([]AccountValue, error) {
 	// collect final state
 	var final []AccountValue
 	state.Range(func(k, v any) bool {
-		a := v.(*acct)
+		a := v.(acct)
 		final = append(final, AccountValue{Name: k.(string), Balance: a.bal})
 		return true
 	})
@@ -173,47 +176,24 @@ func ExecuteBlock(b Block) ([]AccountValue, error) {
 	return final, nil
 }
 
-// commitTx tries to commit tx.
-// Returns true, if tx is finalized (success or tx error),
-// false if there is a conflict and retry needed.
-func commitTx(r txResult) bool {
-	accSet := make(map[string]struct{}, len(r.reads)+len(r.updates))
-	for n := range r.reads {
-		accSet[n] = struct{}{}
-	}
-	for _, u := range r.updates {
-		accSet[u.Name] = struct{}{}
-	}
-
-	names := make([]string, 0, len(accSet))
-	for n := range accSet {
-		names = append(names, n)
-	}
-	sort.Strings(names) // global lex order
-
-	locked := make([]*acct, 0, len(names))
-	for _, n := range names {
-		a := ensureAcct(n)
-		a.mu.Lock()
-		locked = append(locked, a)
-	}
-
+func verifyTx(r txResult) bool {
 	// ensure consistent version
 	for n, v := range r.reads {
 		if ensureAcct(n).ver != v {
-			for _, a := range locked {
-				a.mu.Unlock()
-			}
 			logging.Sugar.Infof("transaction #%d retry: stale read", r.idx)
 			return false
 		}
 	}
 
+	return true
+}
+
+// commitTx tries to commit tx.
+// Returns true, if tx is finalized (success or tx error),
+// false if there is a conflict and retry needed.
+func commitTx(r txResult) bool {
 	// update failed
 	if r.err != nil || len(r.updates) == 0 {
-		for _, a := range locked {
-			a.mu.Unlock()
-		}
 		// TBD: Return detailed diagnostics for failed transactions
 		logging.Sugar.Infof("transaction #%d skip: error=%v", r.idx, r.err)
 		return true
@@ -223,9 +203,6 @@ func commitTx(r txResult) bool {
 	for _, u := range r.updates {
 		ac := ensureAcct(u.Name)
 		if int(ac.bal)+u.BalanceChange < 0 {
-			for _, a := range locked {
-				a.mu.Unlock()
-			}
 			return true
 		}
 	}
@@ -233,11 +210,11 @@ func commitTx(r txResult) bool {
 	// commit
 	for _, u := range r.updates {
 		ac := ensureAcct(u.Name)
-		ac.bal += uint(u.BalanceChange)
-		ac.ver++
-	}
-	for _, a := range locked {
-		a.mu.Unlock()
+		newAc := acct{
+			bal: uint(int(ac.bal) + u.BalanceChange),
+			ver: ac.ver + 1,
+		}
+		state.Store(u.Name, newAc)
 	}
 	logging.Sugar.Infof("transaction #%d committed", r.idx)
 	return true
