@@ -1,0 +1,221 @@
+// Package txexecutor implements a concurrent transaction executor for a blockchain.
+// The executor processes transactions within a block concurrently,
+// ensuring the global account state is updated consistently and safely.
+package txexecutor
+
+import (
+	"sort"
+	"sync"
+
+	"github.com/KirillZiborov/TxExecutor/internal/logging"
+)
+
+// Updates
+type AccountUpdate struct {
+	Name          string
+	BalanceChange int
+}
+
+// Account
+type AccountValue struct {
+	Name    string // a name (a string) which uniquely identifies the account.
+	Balance uint   // a balance (an unsigned integer) representing the account’s balance or state.
+}
+
+// AccountState is the snapshot of accounts at a given block.
+// If the account does not exist, return zero balance
+type AccountState interface {
+	GetAccount(name string) AccountValue
+}
+
+// Transaction is a function that takes the current account state and returns a list of updates to the accounts.
+// Each update is a key/value pair, where the key is the account name,
+// and the value is the balance change for that account.
+type Transaction interface {
+	Updates(AccountState) ([]AccountUpdate, error)
+}
+
+// Block is an ordered sequence of transactions.
+// If a transaction in a block fails other transactions can still be run.
+type Block struct {
+	Transactions []Transaction
+}
+
+// Workers process transactions.
+var Workers = 5
+
+// internal account representation with versioning
+type acct struct {
+	bal uint
+	ver uint64
+}
+
+var (
+	state sync.Map // map from name to acct
+)
+
+func ResetState(initial []AccountValue) {
+	state = sync.Map{}
+	for _, v := range initial {
+		state.Store(v.Name, acct{bal: v.Balance, ver: 0})
+	}
+}
+
+// ensureAcct returns the acct for name or creates it.
+func ensureAcct(name string) acct {
+	if v, ok := state.Load(name); ok {
+		return v.(acct)
+	}
+	a := acct{}
+	real, _ := state.LoadOrStore(name, a)
+	return real.(acct)
+}
+
+// txCtx implements AccountState.
+type txCtx struct {
+	reads map[string]uint64 // name -> version
+}
+
+// newTxCtx initializes the execution context for transaction.
+func newTxCtx() *txCtx {
+	return &txCtx{reads: make(map[string]uint64)}
+}
+
+// GetAccount implementation for txCtx.
+func (c *txCtx) GetAccount(name string) AccountValue {
+	ac := ensureAcct(name)
+
+	if _, seen := c.reads[name]; !seen {
+		c.reads[name] = ac.ver
+	}
+	return AccountValue{Name: name, Balance: ac.bal}
+}
+
+type txResult struct {
+	idx     int
+	updates []AccountUpdate
+	reads   map[string]uint64
+	err     error
+}
+
+// ExecuteBlock implementation.
+// TBD: Add MVCC-based concurrency control with timestamps for higher parallelism
+func ExecuteBlock(b Block) ([]AccountValue, error) {
+	logging.Sugar.Infof("ExecuteBlock: %d tx, workers=%d", len(b.Transactions), Workers)
+
+	// channels
+	execCh := make(chan int, len(b.Transactions))
+	resCh := make(chan txResult, len(b.Transactions))
+
+	// --- Execution Phase ---
+	for i := 0; i < Workers; i++ {
+		go func() {
+			for idx := range execCh {
+				// TBD: Add panic-safety wrapper here to recover from panics in Updates
+				ctx := newTxCtx()
+				upd, err := b.Transactions[idx].Updates(ctx)
+				resCh <- txResult{
+					idx:     idx,
+					updates: upd,
+					reads:   ctx.reads,
+					err:     err,
+				}
+			}
+		}()
+	}
+
+	for i := range b.Transactions {
+		execCh <- i
+	}
+
+	// --- Commit Phase (deterministic) ---
+	ready := make(map[int]txResult) // processed txs
+	k := 0                          // expected tx id to commit
+
+	for k < len(b.Transactions) {
+		var r txResult
+		var ok bool
+
+		if r, ok = ready[k]; !ok {
+			// wait for new result
+			r = <-resCh
+			if verifyTx(r) {
+				ready[r.idx] = r
+				continue // try again
+			} else {
+				execCh <- r.idx
+				continue
+			}
+		}
+
+		// try to commit
+		// TBD: Add panic-safety wrapper here to recover from panics while committing
+		if verifyTx(r) {
+			commitTx(r)
+			delete(ready, k)
+			k++
+		} else {
+			// retry
+			delete(ready, k)
+			// TBD: Implement bounded retry logic to avoid infinite loops on conflicts
+			execCh <- k
+		}
+	}
+
+	close(execCh)
+	logging.Sugar.Info("ExecuteBlock complete")
+
+	// collect final state
+	var final []AccountValue
+	state.Range(func(k, v any) bool {
+		a := v.(acct)
+		final = append(final, AccountValue{Name: k.(string), Balance: a.bal})
+		return true
+	})
+	sort.Slice(final, func(i, j int) bool { return final[i].Name < final[j].Name })
+	return final, nil
+}
+
+func verifyTx(r txResult) bool {
+	// ensure consistent version
+	for n, v := range r.reads {
+		if ensureAcct(n).ver != v {
+			logging.Sugar.Infof("transaction #%d retry: stale read", r.idx)
+			return false
+		}
+	}
+
+	return true
+}
+
+// commitTx tries to commit tx.
+// Returns true, if tx is finalized (success or tx error),
+// false if there is a conflict and retry needed.
+func commitTx(r txResult) bool {
+	// update failed
+	if r.err != nil || len(r.updates) == 0 {
+		// TBD: Return detailed diagnostics for failed transactions
+		logging.Sugar.Infof("transaction #%d skip: error=%v", r.idx, r.err)
+		return true
+	}
+
+	// check balances
+	for _, u := range r.updates {
+		ac := ensureAcct(u.Name)
+		if int(ac.bal)+u.BalanceChange < 0 {
+			return true
+		}
+	}
+
+	// commit
+	for _, u := range r.updates {
+		ac := ensureAcct(u.Name)
+		newAc := acct{
+			bal: uint(int(ac.bal) + u.BalanceChange),
+			ver: ac.ver + 1,
+		}
+		state.Store(u.Name, newAc)
+	}
+	logging.Sugar.Infof("transaction #%d committed", r.idx)
+	return true
+}
